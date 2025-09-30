@@ -1,3 +1,4 @@
+use chrono::{DateTime, Datelike, Utc};
 use clap::Parser;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -19,6 +20,10 @@ struct Args {
     /// Dry run. Show what would happen without moving files.
     #[arg(short, long)]
     dry_run: bool,
+
+    /// Organize by creation date. This ignores extensions and config file.
+    #[arg(short, long)]
+    by_date: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -54,21 +59,44 @@ async fn move_file_to_folder(
     path: &Path,
     config: Option<Arc<Config>>,
     dry_run: bool,
+    by_date: bool,
 ) -> anyhow::Result<()> {
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|s| s.to_lowercase())
-        .unwrap_or_else(|| "no_ext".to_string());
+    let folder_name = match by_date {
+        true => {
+            // Organize by date - get the file's creation/modification date
+            let attr = tokio::fs::metadata(path).await?;
+            let created: DateTime<Utc> = attr.created()?.into();
+            let modified: DateTime<Utc> = attr.modified()?.into();
 
-    let folder = folder_for_extension(&extension, config.as_deref());
+            // Use the older date (creation vs modification)
+            let year = if created < modified {
+                created.year()
+            } else {
+                modified.year()
+            };
+
+            // Return the year as a String
+            year.to_string()
+        }
+        false => {
+            // Organize by file extension
+            let extension = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|s| s.to_lowercase())
+                .unwrap_or_else(|| "no_ext".to_string());
+
+            // Convert the &str to String for consistency
+            folder_for_extension(&extension, config.as_deref()).to_string()
+        }
+    };
 
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("File has no parent directory"))?;
 
     let mut new_path = parent.to_path_buf();
-    new_path.push(folder);
+    new_path.push(folder_name);
     info!("Moving {:?} to {:?}", path, new_path);
     if !dry_run {
         tokio::fs::create_dir_all(&new_path).await?;
@@ -87,6 +115,7 @@ async fn organize_directory(
     directory: PathBuf,
     config: Option<Arc<Config>>,
     dry_run: bool,
+    by_date: bool,
 ) -> anyhow::Result<()> {
     let mut dir = tokio::fs::read_dir(directory).await?;
     let mut tasks = vec![];
@@ -99,7 +128,7 @@ async fn organize_directory(
             let dry_run = dry_run;
 
             tasks.push(task::spawn(async move {
-                if let Err(e) = move_file_to_folder(&path, config, dry_run).await {
+                if let Err(e) = move_file_to_folder(&path, config, dry_run, by_date).await {
                     error!("Error moving {:?}: {}", path, e);
                 }
             }));
@@ -133,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
 
-    organize_directory(args.directory, config, args.dry_run).await?;
+    organize_directory(args.directory, config, args.dry_run, args.by_date).await?;
 
     Ok(())
 }
