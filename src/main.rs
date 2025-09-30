@@ -13,6 +13,10 @@ struct Args {
     /// Config file with rules. Toml format.
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
+
+    /// Dry run. Show what would happen without moving files.
+    #[arg(short, long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,7 +49,7 @@ fn load_config(config_file: &Path) -> anyhow::Result<Config> {
     Ok(config)
 }
 
-fn move_file_to_folder(path: &Path, config: Option<&Config>) -> anyhow::Result<()> {
+fn move_file_to_folder(path: &Path, config: Option<&Config>, dry_run: bool) -> anyhow::Result<()> {
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -60,17 +64,26 @@ fn move_file_to_folder(path: &Path, config: Option<&Config>) -> anyhow::Result<(
 
     let mut new_path = parent.to_path_buf();
     new_path.push(folder);
-    fs::create_dir_all(&new_path)?;
-    new_path.push(
-        path.file_name()
-            .ok_or_else(|| anyhow::anyhow!("File has no name"))?,
-    );
-    fs::rename(path, &new_path)?;
+    println!("Moving {:?} to {:?}", path, new_path);
+    if !dry_run {
+        fs::create_dir_all(&new_path)?;
+
+        new_path.push(
+            path.file_name()
+                .ok_or_else(|| anyhow::anyhow!("File has no name"))?,
+        );
+
+        fs::rename(path, &new_path)?;
+    }
     Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    if args.dry_run {
+        println!("Dry run. Would move files without actually moving them.");
+    }
 
     let config = match args.config {
         Some(config_path) => Some(load_config(&config_path)?),
@@ -81,7 +94,7 @@ fn main() -> anyhow::Result<()> {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() {
-            if let Err(e) = move_file_to_folder(&path, config.as_ref()) {
+            if let Err(e) = move_file_to_folder(&path, config.as_ref(), args.dry_run) {
                 eprintln!("Error moving {:?}: {}", path, e);
             }
         }
