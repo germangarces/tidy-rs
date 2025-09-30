@@ -1,8 +1,10 @@
 use clap::Parser;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::task;
+use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -19,44 +21,47 @@ struct Args {
     dry_run: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct Config {
     folders: HashMap<String, Vec<String>>,
 }
 
 fn folder_for_extension<'a>(ext: &str, config: Option<&'a Config>) -> &'a str {
-    match config {
-        Some(config) => {
-            for (folder, extensions) in &config.folders {
-                if extensions.iter().any(|e| e == ext) {
-                    return folder;
-                }
+    if let Some(config) = config {
+        for (folder, extensions) in &config.folders {
+            if extensions.iter().any(|e| e == ext) {
+                return folder;
             }
-            "other"
         }
-        None => match ext {
-            "png" | "jpg" | "jpeg" => "images",
-            "mp3" | "wav" | "m4a" => "music",
-            "pdf" | "doc" | "docx" | "txt" => "documents",
-            _ => "other",
-        },
+    }
+
+    // Default mappings
+    match ext {
+        "png" | "jpg" | "jpeg" => "images",
+        "mp3" | "wav" | "m4a" => "music",
+        "pdf" | "doc" | "docx" | "txt" => "documents",
+        _ => "other",
     }
 }
 
-fn load_config(config_file: &Path) -> anyhow::Result<Config> {
-    let content = fs::read_to_string(config_file)?;
+async fn load_config(config_file: &Path) -> anyhow::Result<Config> {
+    let content = tokio::fs::read_to_string(config_file).await?;
     let config: Config = toml::from_str(&content)?;
     Ok(config)
 }
 
-fn move_file_to_folder(path: &Path, config: Option<&Config>, dry_run: bool) -> anyhow::Result<()> {
+async fn move_file_to_folder(
+    path: &Path,
+    config: Option<Arc<Config>>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|s| s.to_lowercase())
-        .unwrap_or_else(|| "txt".to_string());
+        .unwrap_or_else(|| "no_ext".to_string());
 
-    let folder = folder_for_extension(&extension, config);
+    let folder = folder_for_extension(&extension, config.as_deref());
 
     let parent = path
         .parent()
@@ -64,41 +69,71 @@ fn move_file_to_folder(path: &Path, config: Option<&Config>, dry_run: bool) -> a
 
     let mut new_path = parent.to_path_buf();
     new_path.push(folder);
-    println!("Moving {:?} to {:?}", path, new_path);
+    info!("Moving {:?} to {:?}", path, new_path);
     if !dry_run {
-        fs::create_dir_all(&new_path)?;
+        tokio::fs::create_dir_all(&new_path).await?;
 
         new_path.push(
             path.file_name()
                 .ok_or_else(|| anyhow::anyhow!("File has no name"))?,
         );
 
-        fs::rename(path, &new_path)?;
+        tokio::fs::rename(path, &new_path).await?;
     }
     Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
+async fn organize_directory(
+    directory: PathBuf,
+    config: Option<Arc<Config>>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let mut dir = tokio::fs::read_dir(directory).await?;
+    let mut tasks = vec![];
+
+    while let Some(entry) = dir.next_entry().await? {
+        let path = entry.path();
+        let metadata = entry.metadata().await?;
+        if metadata.is_file() {
+            let config = config.clone(); // Arc makes it cheap to clone
+            let dry_run = dry_run;
+
+            tasks.push(task::spawn(async move {
+                if let Err(e) = move_file_to_folder(&path, config, dry_run).await {
+                    error!("Error moving {:?}: {}", path, e);
+                }
+            }));
+        }
+    }
+
+    // Wait for all tasks
+    for task in tasks {
+        task.await?;
+    }
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Initialize tracing subscriber with custom formatting
+    tracing_subscriber::fmt().init();
+
     let args = Args::parse();
 
     if args.dry_run {
-        println!("Dry run. Would move files without actually moving them.");
+        info!("Dry run. Would move files without actually moving them.");
     }
 
     let config = match args.config {
-        Some(config_path) => Some(load_config(&config_path)?),
+        Some(config_path) => {
+            let cfg = load_config(&config_path).await?;
+            Some(Arc::new(cfg))
+        }
         None => None,
     };
 
-    for entry in fs::read_dir(args.directory)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Err(e) = move_file_to_folder(&path, config.as_ref(), args.dry_run) {
-                eprintln!("Error moving {:?}: {}", path, e);
-            }
-        }
-    }
+    organize_directory(args.directory, config, args.dry_run).await?;
 
     Ok(())
 }
