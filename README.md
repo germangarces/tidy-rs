@@ -1,28 +1,54 @@
 # 🗂️ Tidy-rs: CLI File Organizer
 
-A command-line tool that automatically organizes files in a given directory into subfolders based on rules (e.g., by file extension, by date, or by custom patterns).
+A fast, concurrent command-line tool that automatically organizes files into subfolders by extension.
 
-## Features (Progressive Difficulty)
+## Usage
 
-### Basic
-- Take a directory path as input
-- Scan all files in the directory
-- Move `.jpg` and `.png` into an `images/` folder, `.mp3` into `music/`, etc.
+```bash
+# Get help
+tidy-rs --help
 
-### Intermediate
-- Allow the user to configure rules in a `.toml` file (e.g., "pdf → documents")
-- Handle errors gracefully (e.g., when a file can't be moved)
+# Organize files in a directory
+tidy-rs /path/to/messy/directory
 
-### Advanced
-- Add a `--dry-run` option that shows what would happen without moving files
-- Add logging with levels (info, warn, error)
-- Implement concurrency (use Rayon or async) to process large directories faster
+# Preview what would happen (dry run)
+tidy-rs --dry-run /path/to/directory
 
-## Why This Project?
+# Use custom rules from config file
+tidy-rs --config rules.toml /path/to/directory
+```
 
-This project helps you practice:
-- Ownership and borrowing with file paths
-- Working with the `std::fs` API (and maybe `walkdir` crate)
-- Using structs and traits to represent rules
-- Error handling with `Result` and `?`
-- Making it as simple or advanced as you like
+## Installation
+
+```bash
+git clone <repo-url>
+cd tidy-rs
+cargo build --release
+./target/release/tidy-rs --help
+```
+
+## Default File Organization
+
+- **Images**: `png`, `jpg`, `jpeg` → `images/`
+- **Music**: `mp3`, `wav`, `m4a` → `music/`  
+- **Documents**: `pdf`, `doc`, `docx`, `txt` → `documents/`
+- **Other**: Everything else → `other/`
+
+## Custom Configuration
+
+Create a `rules.toml` file:
+
+```toml
+[folders]
+images = ["png", "jpg", "jpeg", "gif", "webp"]
+code = ["rs", "py", "js", "ts", "go"]
+archives = ["zip", "tar", "gz", "rar"]
+```
+
+## Features
+
+- ✅ **Concurrent processing** for fast organization
+- ✅ **Dry run mode** to preview changes
+- ✅ **Custom rules** via TOML configuration
+- ✅ **Structured logging** with timestamps
+- ✅ **Error handling** for edge cases
